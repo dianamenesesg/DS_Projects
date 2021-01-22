@@ -1,0 +1,577 @@
+---
+title: "Time Series Analysis on Daily Data"
+subtitle: "Data Exploration and Statistics in R"
+author: "Diana Mercedes Meneses Gustin"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+---
+```{r setup, include=FALSE, message=FALSE, warning=FALSE, results='asis'}
+knitr::opts_chunk$set(out.width='750px', dpi=200, echo = TRUE)
+library(dplyr)
+library(tidyverse)
+library(plotly)
+library(tseries)
+library(autoTS)
+library(zoo)
+library(prophet)
+library(forecast)
+
+getwd()
+source("ZZ2 - data_preparation.R")
+```
+The Ironman Triathlon is considered one of the most difficult sporting events in the world. This one-day race consists of a 3.86 km swim, a 180.25 km bicycle ride, and a marathon 42.20 km run; people completing it within the strict time cutoffs are agreed to be recognized as "Ironmen". In this report, we have the records of many activities from an athlete who participates in the Ironman event regularly and we would like to answer some questions, the main one is:
+
+## What do we expect on performance for the next 12 months from this triathlete?
+
+This data is quite messy since it is a real record of sports activity and there are several sports involved and a lot of activities, next we are focusing in analysis just some statistics of the activities and create monthly time series out of it.
+ 
+First, let us take a view at the dataset, and to examine some of the metrics for each feature, including the _NaN_ 
+```{r cars}
+## First things first
+summary(dat_clean)
+```
+From the structure above, is easy to find _calories_, _avgSpeed_, _distance_, and _duration_ with less than 50 NaN, and their mean and median are relatively close, then from now, these will be the features to be studied here.
+```{r}
+dat_clean <- select(dat_clean, 
+                    c( "activityType", "activity_recoded", "date", ## Selecting the metrics to be studied
+                       "calories", "avgSpeed", "distance", "duration")) %>% 
+             mutate(months =  month(date), 
+                     years =  year(date)) %>% ## Creating new columns for month and year
+             mutate(longitude =  avgSpeed*duration) ## Creating the length column
+
+```
+Next, the plot of all these features with respect to the time for each activity recorded is presented. As we can see, in the middle of each year (from 2015 approx) we have a strong signal of the _other_ activity class for all the metrics, this seasonality is also clear for _bike_ from 2014, with strong pecks in calories, distance, duration and even for avgSpeed, where wide pecks appear. From the distance and duration graphs, we can see that the max points are near 200km for the bike, 50km for the run, and 5km for the swim, achieved in 400m, 200/300m, and 75m respectively from 2015.
+```{r, out.width = "100%", out.height = "100%"}
+cal_type <- ggplot(data = dat_clean, aes(x=date )) +
+                  geom_line(aes(y = calories, color = activity_recoded)) + 
+                            facet_wrap(. ~ activity_recoded, ncol = 1, scales = 'free_y')
+cal_type
+
+avgspeed_type <- ggplot(data = dat_clean, aes(x=date )) +
+                  geom_line(aes(y = avgSpeed, color = activity_recoded)) + 
+                            facet_wrap(. ~ activity_recoded, ncol = 1, scales = 'free_y')
+avgspeed_type
+
+dist_type <- ggplot(data = dat_clean, aes(x=date )) +
+                  geom_line(aes(y = distance, color = activity_recoded)) + 
+                            facet_wrap(. ~ activity_recoded, ncol = 1, scales = 'free_y')
+dist_type
+
+dur_type <- ggplot(data = dat_clean, aes(x=date )) +
+                  geom_line(aes(y = duration, color = activity_recoded)) + 
+                            facet_wrap(. ~ activity_recoded, ncol = 1, scales = 'free_y')
+dur_type
+```
+
+To explore the metrics seasonality, we will divide the activities into four groups: bike, run, swim, and others.
+```{r}
+## creating the series for each activity
+dat_bike <- filter(dat_clean, activity_recoded =="Bike") # Bike activities
+dat_run <- filter(dat_clean, activity_recoded =="Run") # Run activities
+dat_swim <- filter(dat_clean, activity_recoded =="Swim") # Swim activities
+dat_others <- filter(dat_clean, activity_recoded == "Other") # other activities
+```
+For now, our efforts are focused on bike activities. To aggregate the metrics, first, we will group by month and then for a year, and in each subgroup, the average will be calculated in the standard way except for the speed, where it is calculated as the mean of the longitudes divided by the mean of its duration.
+```{r}
+test_graph <- dat_bike %>% 
+  group_by(months, years) %>%
+  summarize(avg_cal = mean(calories,na.rm=T),
+            avg_sp = mean(longitude,na.rm=T)/mean(duration,na.rm=T),
+            avg_distance =mean(distance,na.rm = T),
+            avg_duration =mean(duration,na.rm = T),
+            datetime = first(date),
+            .groups="keep"
+            )
+```
+One question arises when is taken into account the activity type in this category, to see these effects another data frame was built, followed by the respective graph.
+```{r, out.width = '150%'}
+test_graph_type <- dat_bike %>% #dat_bike %>%
+  group_by(months, years, activityType) %>%
+  summarize(avg_cal = mean(calories,na.rm=T),
+            avg_sp = mean(longitude,na.rm=T)/mean(duration,na.rm=T),
+            avg_distance =mean(distance,na.rm = T),
+            avg_duration =mean(duration,na.rm = T),
+            datetime = first(date),
+            .groups="keep"
+            )
+dur1 <- ggplot() + geom_line(aes(test_graph$datetime, test_graph$avg_duration), colour = 'red') + 
+            geom_line(aes(test_graph_type$datetime, test_graph_type$avg_duration), colour = 'blue', alpha = 0.5) 
+
+dist1 <- ggplot() + geom_line(aes(test_graph$datetime, test_graph$avg_distance), colour = 'red') + 
+  geom_line(aes(test_graph_type$datetime, test_graph_type$avg_distance), colour = 'blue', alpha = 0.5) 
+
+avgsp1 <- ggplot() + geom_line(aes(test_graph$datetime, test_graph$avg_sp), colour = 'red') + 
+  geom_line(aes(test_graph_type$datetime, test_graph_type$avg_sp), colour = 'blue', alpha = 0.5) 
+
+cal1 <- ggplot() + geom_line(aes(test_graph$datetime, test_graph$avg_cal), colour = 'red') + 
+  geom_line(aes(test_graph_type$datetime, test_graph_type$avg_cal), colour = 'blue', alpha = 0.5)
+
+cowplot::plot_grid(cal1, avgsp1, dist1, dur1, labels = "AUTO")
+```
+
+Despite the difference observed between the mean of each metric when calculated taking into account the category type (blue line) and without it (red) we can discard this additional aggregation and use the dataframe _test_graph_ displayed by the red lines
+
+## Time series
+
+We built the monthly time series object for the four metrics in the bike activity and take a look at its three components: trend, seasonal, and noise from January 2012. In addition, we can see the lags autorcorrelation for each feature using the *acf* function.
+
+```{r}
+freq = 12
+ts_cal <- ts(test_graph$avg_cal, frequency = freq, start = c(2012, 1))
+ts_cal_decompose <- decompose(ts_cal)
+
+ts_sp <- ts(test_graph$avg_sp, frequency = freq, start = c(2012, 1))
+ts_sp_decompose <- decompose(ts_sp)
+
+
+ts_dis <- ts(test_graph$avg_distance, frequency = freq, start = c(2012, 1))
+ts_dis_decompose <- decompose(ts_dis)
+
+
+ts_dur <- ts(test_graph$avg_duration, frequency = freq, start = c(2012, 1))
+ts_dur_decompose <- decompose(ts_dur)
+
+```
+
+### Calories time series
+
+First, in the calorie measurements, we see two trends, the up one is from 2012 until 2016 approx and a downtrend is observed from then. Also, there is a seasonal pattern, apparently stationary, with a peak in the middle of the year, which is in accordance with the previous observations. 
+
+In the autocorrelation plot, we have a significant correlation with the first lag and with the 8, 9, and 10 lags. Apparently, the relation between monthly calorie is extended for one and a half years, however, we can think that these lags are above the significance bounds for the chance. Therefore, we expect a model with a moving average of order q = 1.
+
+```{r}
+plot(ts_cal_decompose)
+acf(x = ts_cal, lag.max =  36)
+```
+
+### AvgSpeed time series
+
+In the case of average speed, we see an up and down-trend and a stationary seasonal component, very similar to the calories graph. In the correlogram, we see a significant correlation between lags until 1 year approximately, however just the first one is strong, then we expect a q =1.
+
+```{r}
+plot(ts_sp_decompose)
+acf(x = ts_sp, lag.max =  24)
+```
+
+### Distance time series
+
+Decomposing the distance time series, we recognize the similarities with the previous analysis, even for the autocorrelation function.
+
+```{r}
+plot(ts_dis_decompose)
+acf(x = ts_dis, lag.max =  24)
+```
+
+### Duration time series
+
+Finally, for the duration observations, the *acf* graph is similar to the one for calories, which seems a reasonable result, and again we expect a q close to 1.
+
+```{r}
+plot(ts_dur_decompose)
+acf(x = ts_dur, lag.max =  24)
+```
+
+## Are these series stationary ? 
+
+Before using any model, we need to verify if these series are really stationary in mean and variance, for this we will use two tests: Kwiatkowski-Phillips-Schmidt-Shin and the Phillips-Perron test. A large p-value (i.e. above 0.05) will indicate a high risk if the null hypothesis is rejected.
+
+
+### Is the Calories time series stationary?
+
+```{r}
+kpss.test(ts_cal, null = 'Level') #Kwiatkowski-Phillips-Schmidt-Shin test
+tseries::pp.test(ts_cal)
+```
+
+For the *kpss* test, the p-value indicates the $H_0$ should be accepted, and we consider the calories series stationary.
+
+For the *pp* test, the p-value indicates the $H_0$ should be rejected, and consider the calories series stationary.
+
+### Is the AvgSpeed time series stationary?
+
+```{r}
+kpss.test(ts_sp, null = 'Level') #Kwiatkowski-Phillips-Schmidt-Shin test
+tseries::pp.test(ts_sp)
+```
+
+For the *kpss* test, the p-value indicates the $H_0$ should be accepted, and we consider the AvgSpeed series stationary.
+
+For the *pp* test, the p-value indicates the $H_0$ should be rejected, and consider the AvgSpeed series stationary.
+
+
+### Is the Distance time series stationary?
+
+```{r}
+kpss.test(ts_dis, null = 'Level') #Kwiatkowski-Phillips-Schmidt-Shin test
+tseries::pp.test(ts_dis)
+```
+
+For the *kpss* test, the p-value indicates the $H_0$ should be accepted, and we consider the distance series stationary.
+
+For the *pp* test, the p-value indicates the $H_0$ should be rejected, and consider the distance series stationary.
+
+
+### Is the Duration time series stationary?
+
+```{r}
+kpss.test(ts_dur, null = 'Level') #Kwiatkowski-Phillips-Schmidt-Shin test
+tseries::pp.test(ts_dur)
+
+```
+
+For the *kpss* test, the p-value indicates the $H_0$ should be accepted, and we consider the duration series stationary.
+
+For the *pp* test, the p-value indicates the $H_0$ should be rejected, and consider the duration series stationary.
+
+
+After checking the stationarity of our series, let try the `prophet` and `auto.arima` algorithms to predict _calories_, _avgSpeed_, _distance_, and _duration_ 12 months ahead.
+
+### Calories forecasting using **prophet**
+
+```{r}
+df_ts_cal <- data.frame(y = as.matrix(ts_cal), 
+                        ds = as.Date(as.yearmon(time(ts_cal)))) #prophet accepts df with colums ds and y
+
+prophet_model <- prophet(df = df_ts_cal, n.changepoints = 40,
+                         daily.seasonality = FALSE,
+                         weekly.seasonality = FALSE,
+                         yearly.seasonality = TRUE,
+                         holidays = NULL,
+                         seasonality.mode = 'additive') # instancing the model
+future <- make_future_dataframe(prophet_model, periods = 12, freq = 'month') # Creating the df for store current and predicted values
+forecast <- predict(prophet_model, future) # Actual forecast
+## Some visualization 
+dyplot.prophet(prophet_model, forecast)
+prophet_plot_components(prophet_model, forecast)
+tail(forecast[c('ds', 'yhat')], 12)
+```
+
+Using the *prophet* algorithm and plotting the components we expect a little break around February 2021 and a maximum caloric expenditure happens between July and September. In September we expect the highest value around  1228.85.
+
+## Calories forecasting using **Auto.Arima**
+
+The best model is selected according to their AIC value. Since we have a monthly seasonality, we will use D = 1 as one of the parameters. This choosing is also supported by the low AIC obtained when we use this parameter instead of D = 0 in the Auto.Arima function:
+
+```{r}
+arima_model <- auto.arima(ts_cal,
+                          D = 1,
+                          approximation = FALSE,
+                          seasonal = TRUE, 
+                          allowmean = FALSE, 
+                          allowdrift = FALSE, 
+                          trace = TRUE)
+```
+
+
+The best model for our calories time series is the Arima(p = 0, d = 0, q = 1)(P = 2, D = 1, Q = 0), Next, lets take a look at the partial autocorrelation function to check the order of the autoregressive term.
+
+```{r}
+pacf(ts_cal)
+```
+
+From this plot, we see a low correlation with the first lag, which is in accordance with the model selected using AutoArima. Now we look at the residuals plot:
+
+```{r}
+checkresiduals(arima_model)
+```
+The residuals do not look like white noise since their mean and standard deviation not seems stationary, in the ACF plot we can see an apparent correlation at lag 9, and in the distribution plot, we cannot see normal distribution. Finally, the Ljung-Box test, which examines autocorrelation of the residuals, indicates that the model did not capture all the information, and we have some lack in the fit.
+
+Being aware of this, let us do a prediction for calories:
+```{r}
+fcast_arima <- forecast(arima_model, h = 12)
+fcast_arima$mean
+plot(fcast_arima)
+```
+
+We expect a spent in calories around 911.8660 by October and 1082.7614 in November approximately. Also, we have a high value in September (1420.85) which is in accordance with the prophet predictions.
+
+### AvgSpeed forecasting using *prophet*
+
+```{r}
+df_ts <- data.frame(y = as.matrix(ts_sp), 
+                        ds = as.Date(as.yearmon(time(ts_sp)))) #prophet accepts df with colums ds and y
+
+prophet_model <- prophet(df = df_ts, n.changepoints = 40,
+                         daily.seasonality = FALSE,
+                         weekly.seasonality = FALSE, 
+                         yearly.seasonality = TRUE,
+                         holidays = NULL,
+                         seasonality.mode = 'additive') # instancing the model
+future <- make_future_dataframe(prophet_model, periods = 12, freq = 'month') # Creating the df for store current and predicted values
+forecast <- predict(prophet_model, future) # Actual forecast
+tail(forecast[c('ds', 'yhat')], 12)
+## Some graphics 
+dyplot.prophet(prophet_model, forecast)
+prophet_plot_components(prophet_model, forecast)
+```
+
+We have a strong signal between Feb and April, and a high average speed in July as before.
+
+### AvgSpeed forecasting using **Auto.Arima**
+```{r}
+arima_model <- auto.arima(ts_sp, 
+                          D = 1,
+                          approximation = FALSE,
+                          seasonal = TRUE, 
+                          allowmean = FALSE, 
+                          allowdrift = FALSE, 
+                          trace = TRUE)
+#summary(arima_model)
+checkresiduals(arima_model)
+
+fcast_arima <- forecast(arima_model, h = 12)
+fcast_arima$mean
+plot(fcast_arima)
+```
+
+In this case, the best model is the Arima(p = 0, d = 1, q = 1)(P = 0, D = 1, Q = 1). This tells us that was necessary to do 1 differentiation in order to make the series stationary in both trend and seasonality, and we have a moving average the order 1. The residuals do not have correlations and are basically white noise, and we expect for the next 2 months and an average of 8.14 and 11.09m/s, a maximum value is reached in September.
+
+### Distance forecasting using *prophet*
+
+```{r}
+df_ts <- data.frame(y = as.matrix(ts_dis), 
+                        ds = as.Date(as.yearmon(time(ts_dis)))) #prophet accepts df with colums ds and y
+
+prophet_model <- prophet(df = df_ts, n.changepoints = 40,
+                         daily.seasonality = FALSE,
+                         weekly.seasonality = FALSE, 
+                         yearly.seasonality = TRUE,
+                         holidays = NULL,
+                         seasonality.mode = 'additive') # instancing the model
+future <- make_future_dataframe(prophet_model, periods = 12, freq = 'month') # Creating the df for store current and predicted values
+forecast <- predict(prophet_model, future) # Actual forecast
+tail(forecast[c('ds', 'yhat')], 12)
+## Some graphics 
+dyplot.prophet(prophet_model, forecast)
+prophet_plot_components(prophet_model, forecast)
+
+```
+
+For distance, we have, again, a high signal in July (31.02) and September (37.10).
+
+### Distance forecasting using **Auto.Arima**
+```{r}
+arima_model <- auto.arima(ts_dis, 
+                          D = 1,
+                          approximation = FALSE,
+                          seasonal = TRUE, 
+                          allowmean = FALSE, 
+                          allowdrift = FALSE, 
+                          trace = TRUE)
+#summary(arima_model)
+checkresiduals(arima_model)
+
+fcast_arima <- forecast(arima_model, h = 12)
+fcast_arima$mean
+plot(fcast_arima)
+```
+
+The best model is the Arima(p = 0, d = 1, q = 1)(P = 0, D = 1, Q = 2). We expect 5.58 and 16km in October and November, a high distance is expected in September.
+
+### Duration forecasting using *prophet*
+
+```{r}
+df_ts <- data.frame(y = as.matrix(ts_dur), 
+                        ds = as.Date(as.yearmon(time(ts_dur)))) #prophet accepts df with colums ds and y
+
+prophet_model <- prophet(df = df_ts, n.changepoints = 2,
+                         daily.seasonality = FALSE,
+                         weekly.seasonality = FALSE, 
+                         yearly.seasonality = TRUE,
+                         holidays = NULL,
+                         seasonality.mode = 'additive') # instancing the model
+future <- make_future_dataframe(prophet_model, periods = 12, freq = 'month') # Creating the df for store current and predicted values
+forecast <- predict(prophet_model, future) # Actual forecast
+## Some graphics 
+dyplot.prophet(prophet_model, forecast)
+prophet_plot_components(prophet_model, forecast)
+tail(forecast[c('ds', 'yhat')], 12)
+```
+
+We have a strong signal from July until September approximately.
+
+### Duration forecasting using **Auto.Arima**
+```{r}
+arima_model <- auto.arima(ts_dur, 
+                          D = 1,
+                          approximation = FALSE,
+                          seasonal = TRUE, 
+                          allowmean = FALSE, 
+                          allowdrift = FALSE, 
+                          trace = TRUE)
+#summary(arima_model)
+checkresiduals(arima_model)
+
+fcast_arima <- forecast(arima_model, h = 12)
+fcast_arima$mean
+plot(fcast_arima)
+```
+
+The best model is the Arima(p = 1, d = 0, q = 0)(P = 2, D = 1, Q = 0). We expect 66.77 and 87.98min for Oct and Nov respectively and 98.63 and 97.44min for Aug and Sep, slightly different from prophet results (81.05 and 90.25min)
+
+
+# What about the duration for the runing and swim activities?
+
+### Prophet model for run activity
+
+```{r}
+test_graph <- dat_run %>% 
+  group_by(months, years) %>%
+  summarize(avg_duration =mean(duration,na.rm = T),
+            datetime = first(date),
+            .groups="keep"
+            )
+freq = 12
+ts_dur <- ts(test_graph$avg_duration, frequency = freq, start = c(2012, 1))
+
+
+df_ts <- data.frame(y = as.matrix(ts_dur), 
+                        ds = as.Date(as.yearmon(time(ts_dur)))) #prophet accepts df with colums ds and y
+
+prophet_model <- prophet(df = df_ts, n.changepoints = 2,
+                         daily.seasonality = FALSE,
+                         weekly.seasonality = FALSE, 
+                         yearly.seasonality = TRUE,
+                         holidays = NULL,
+                         seasonality.mode = 'additive') # instancing the model
+future <- make_future_dataframe(prophet_model, periods = 12, freq = 'month') # Creating the df for store current and predicted values
+forecast <- predict(prophet_model, future) # Actual forecast
+
+## Cross validation
+df.cv <- cross_validation(prophet_model, initial = 365 * 3, horizon = 365 * 1, units = "days")
+t.test(df.cv$y, df.cv$yhat)
+plot(df.cv$y, df.cv$yhat, 
+     xlab = "Actual Values",
+     ylab = "Predicted Values",
+     ylim=c(20, 90), 
+     xlim=c(20,90))
+abline(a = 0, b = 1)
+tail(forecast[c('ds', 'yhat')], 12)
+```
+
+We expect a highest value in July, around 67min.
+
+### Arima model for run activity
+
+```{r}
+arima_model <- auto.arima(ts_dur, 
+                          D = 1,
+                          approximation = FALSE,
+                          seasonal = TRUE, 
+                          allowmean = FALSE, 
+                          allowdrift = FALSE, 
+                          trace = FALSE)
+checkresiduals(arima_model)
+
+fcast_arima <- forecast(arima_model, h = 12)
+fcast_arima$mean
+```
+
+being aware of the correlation among the residuals we do the prediction and obtain the maximum duration for swim in September (73.13min).
+
+### Prophet model for swim activity
+
+
+```{r}
+test_graph <- dat_swim %>% 
+  group_by(months, years) %>%
+  summarize(avg_duration =mean(duration,na.rm = T),
+            datetime = first(date),
+            .groups="keep"
+            )
+freq = 12
+ts_dur <- ts(test_graph$avg_duration, frequency = freq, start = c(2012, 1))
+
+df_ts <- data.frame(y = as.matrix(ts_dur), 
+                        ds = as.Date(as.yearmon(time(ts_dur)))) #prophet accepts df with colums ds and y
+
+prophet_model <- prophet(df = df_ts, n.changepoints = 2,
+                         daily.seasonality = FALSE,
+                         weekly.seasonality = FALSE, 
+                         yearly.seasonality = TRUE,
+                         holidays = NULL,
+                         seasonality.mode = 'additive') # instancing the model
+future <- make_future_dataframe(prophet_model, periods = 12, freq = 'month') # Creating the df for store current and predicted values
+forecast <- predict(prophet_model, future) # Actual forecast
+
+## Cross validation
+df.cv <- cross_validation(prophet_model, initial = 365 * 3, horizon = 365 * 1, units = "days")
+t.test(df.cv$y, df.cv$yhat)
+plot(df.cv$y, df.cv$yhat, 
+     xlab = "Actual Values",
+     ylab = "Predicted Values",
+     ylim=c(20, 90), 
+     xlim=c(20,90) )
+abline(a = 0, b = 1)
+
+tail(forecast[c('ds', 'yhat')], 12)
+```
+
+### Arima model for swim activity
+
+```{r}
+arima_model <- auto.arima(ts_dur, 
+                          D = 1,
+                          approximation = FALSE,
+                          seasonal = TRUE, 
+                          allowmean = FALSE, 
+                          allowdrift = FALSE, 
+                          trace = FALSE)
+checkresiduals(arima_model)
+
+fcast_arima <- forecast(arima_model, h = 12)
+fcast_arima$mean
+```
+
+We have not correlated residuals! 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+best.algo <- getBestModel(df_ts_cal$ds, df_ts_cal$y, "month",graph = T)
+best.algo
+
+```
+
+
+
+
+
+# AutoTS experiments:
+```{r}
+#auto_ts <- prepare.ts(test_graph$datetime, test_graph$avg_sp, freq = 'month') #week month quarter day
+#auto_ts
+#plot.ts(auto_ts$obj.ts)
+```
+
+
+
+
+```{r}
+Time = attributes(ts_cal)[[1]]
+Time = seq(Time[1],Time[2], length.out=(Time[2]-Time[1])*Time[3])
+
+dat = cbind(Time, with(ts_cal_decompose, data.frame(Observed=x, Trend=trend, Seasonal=seasonal, Random=random)))
+
+ggplot(gather(dat, component, value, -Time), aes(Time, value)) +
+  facet_grid(component ~ ., scales="free_y") +
+  geom_line() +
+  theme_bw() +
+  labs(y="", x="Year") +
+  ggtitle(expression(Decomposed~Calories~Time~Series~of~Bike~Activity)) +
+  theme(plot.title=element_text(hjust=0.5))
+```
+
